@@ -1,0 +1,283 @@
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <NTPClient.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <time.h>
+
+const char* ssid = "***********"; Doplň wifi údaje
+const char* password = "*************";
+const char* apiKey = "**********************";  // OpenWeatherMap API kľúč
+String city = "Bratislava";  // Mesto na predpoveď
+String country = "SK";      // Krajina
+const unsigned long firstTimeInterval = 10000; // 5 sekúnd na prvú aktualizáciu
+bool firstUpdateExecuted = false; // Sledovanie, či už prvá aktualizácia prebehla
+unsigned long startMillis = 0;
+
+const long utcOffsetInSeconds = 7200;
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+
+unsigned long previousTimeMillis = 0;
+unsigned long previousSensorMillis = 0;
+unsigned long previousWeatherMillis = 0;
+unsigned long previousPHPMillis = 0;
+const long timeInterval = 1000;
+const long sensorInterval = 5000;
+const long weatherInterval = 5000;
+const long phpInterval = 5000;
+
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, 16, 17);
+
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    sendNextionCommand("wifi.txt=\"off\"");
+  }
+  Serial.println("WiFi connected");
+  sendNextionCommand("wifi.txt=\"on\"");
+
+  timeClient.begin();
+  configTime(utcOffsetInSeconds, 0, "pool.ntp.org");
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // Čakáme na WiFi pripojenie
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Čakám na WiFi...");
+    return; // Ak nie je pripojené, nič nerobíme
+  }
+
+  // Po pripojení na WiFi nastavíme štartovací čas
+  if (!firstUpdateExecuted && startMillis == 0) {
+    startMillis = millis(); // Uložíme moment pripojenia
+  }
+
+  // Počkáme prvý časový interval
+  if (!firstUpdateExecuted && millis() - startMillis < firstTimeInterval) {
+    return; // Ešte neubehol prvý interval, čakáme
+  }
+
+  // Po uplynutí prvého intervalu vykonáme prvú aktualizáciu
+  if (!firstUpdateExecuted) {
+    previousTimeMillis = currentMillis;
+    previousSensorMillis = currentMillis;
+    previousWeatherMillis = currentMillis;
+
+    timeClient.update();
+    sendTimeToNextion();
+    sendDateToNextion();
+    fetchAndSendWeather();
+
+    firstUpdateExecuted = true;
+  }
+
+  // Normálne aktualizácie po prvej aktualizácii
+  if (currentMillis - previousTimeMillis >= timeInterval) {
+    previousTimeMillis = currentMillis;
+    timeClient.update();
+    sendTimeToNextion();
+    sendDateToNextion();
+  }
+
+  if (currentMillis - previousWeatherMillis >= weatherInterval) {
+    previousWeatherMillis = currentMillis;
+    fetchAndSendWeather();
+  }
+
+  // Získanie údajov z PHP skriptu a ich posielanie do Nextion displeja
+  if (currentMillis - previousPHPMillis >= phpInterval) {
+    previousPHPMillis = currentMillis;
+    fetchAndSendPHPData();
+  }
+}
+
+void sendTimeToNextion() {
+  char timeString[9];
+  sprintf(timeString, "%02d:%02d:%02d", timeClient.getHours(), timeClient.getMinutes(), timeClient.getSeconds());
+  sendNextionCommand("time.txt=\"" + String(timeString) + "\"");
+  sendNextionCommand("time1.txt=\"" + String(timeString) + "\"");
+}
+
+void sendDateToNextion() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time");
+    return;
+  }
+  
+  char dateString[11];
+  sprintf(dateString, "%02d.%02d.%04d", timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+  sendNextionCommand("date.txt=\"" + String(dateString) + "\"");
+}
+
+void fetchAndSendWeather() {
+  String url = "http://api.openweathermap.org/data/2.5/forecast?q=" + city + "," + country + "&units=metric&cnt=40&appid=" + apiKey;
+  HTTPClient http;
+  http.begin(url);
+  int httpResponseCode = http.GET();
+
+  if (httpResponseCode == 200) {
+    String payload = http.getString();
+    //Serial.println("API raw payload:");
+    //Serial.println(payload);  
+    DynamicJsonDocument doc(8192);  
+    deserializeJson(doc, payload);
+    sendNextionCommand("api.txt=\"on\"");
+
+    float tempMax = -1000;
+    float tempMin = 1000;
+    float totalWindSpeed = 0;
+    float totalHumidity = 0;
+    int windSpeedCount = 0;
+    int humidityCount = 0;
+    
+    // Načítanie údajov pre prvé dni (1-8)
+    for (int i = 1; i <= 8; i++) {
+      float temp = doc["list"][i]["main"]["temp"];
+      float windSpeed = doc["list"][i]["wind"]["speed"];
+      float humidity = doc["list"][i]["main"]["humidity"];
+      
+      // Max a min teplota
+      if (temp > tempMax) tempMax = temp;
+      if (temp < tempMin) tempMin = temp;
+      
+      // Sčítať veternú rýchlosť pre priemer
+      totalWindSpeed += windSpeed;
+      windSpeedCount++;
+      
+      // Sčítať vlhkosť pre priemer
+      totalHumidity += humidity;
+      humidityCount++;
+    }
+
+    // Výpočet priemerných hodnôt vetra a vlhkosti
+    float avgWindSpeed = totalWindSpeed / windSpeedCount;
+    float avgHumidity = totalHumidity / humidityCount;
+
+    // Zaokrúhľovanie na celé čísla
+    sendNextionCommand("weather_max.txt=\"" + String(int(tempMax)) + "\""); 
+    sendNextionCommand("weather_min.txt=\"" + String(int(tempMin)) + "\""); 
+    sendNextionCommand("weather_wind.txt=\"" + String(int(avgWindSpeed)) + "\"");  
+    sendNextionCommand("weather_hum.txt=\"" + String(int(avgHumidity)) + "\"");  
+    
+    int iconId = doc["list"][1]["weather"][0]["id"];
+    sendNextionCommand("weather_icon.pic=" + String(mapWeatherIcon(iconId)));
+
+    // Predpoveď na nasledujúce dni
+   // Predpoveď na nasledujúce dni + dátum
+for (int i = 1; i < 4; i++) {
+    float maxTemp = -1000;
+    float minTemp = 1000;
+    float totalWindSpeedDay = 0;
+    float totalHumidityDay = 0;
+    int windSpeedCountDay = 0;
+    int humidityCountDay = 0;
+    int dayIconId = doc["list"][(i + 1) * 8]["weather"][0]["id"];
+    String date = doc["list"][(i + 1) * 8]["dt_txt"].as<String>();
+    String dayMonth = date.substring(8, 10) + "/" + date.substring(5, 7); // DD/MM
+
+    for (int j = (i + 1) * 8; j < (i + 2) * 8; j++) {
+      float temp = doc["list"][j]["main"]["temp"];
+      float windSpeed = doc["list"][j]["wind"]["speed"];
+      float humidity = doc["list"][j]["main"]["humidity"];
+
+      if (temp > maxTemp) maxTemp = temp;
+      if (temp < minTemp) minTemp = temp;
+
+      totalWindSpeedDay += windSpeed;
+      windSpeedCountDay++;
+
+      totalHumidityDay += humidity;
+      humidityCountDay++;
+    }
+
+    float avgWindSpeedDay = totalWindSpeedDay / windSpeedCountDay;
+    float avgHumidityDay = totalHumidityDay / humidityCountDay;
+
+    sendNextionCommand("for_max_" + String(i) + ".txt=\"" + String(int(maxTemp)) + "\"");
+    sendNextionCommand("for_min_" + String(i) + ".txt=\"" + String(int(minTemp)) + "\"");
+    sendNextionCommand("for_win_" + String(i) + ".txt=\"" + String(int(avgWindSpeedDay)) + "\"");
+    sendNextionCommand("for_hu_" + String(i) + ".txt=\"" + String(int(avgHumidityDay)) + "\"");
+    sendNextionCommand("fort_ic_" + String(i) + ".pic=" + String(mapWeatherIcon(dayIconId)));
+    sendNextionCommand("for_date_" + String(i) + ".txt=\"" + dayMonth + "\"");  // Poslať iba deň a mesiac
+}
+  }
+  http.end();
+}
+
+void fetchAndSendPHPData() {
+  String url = "********************";  // Zmeňte na URL vášho PHP skriptu
+  HTTPClient http;
+  http.begin(url);
+  int httpResponseCode = http.GET();
+
+  
+  Serial.print("HTTP Response Code: ");
+  Serial.println(httpResponseCode);
+
+  if (httpResponseCode == 200) {
+    String payload = http.getString();
+    DynamicJsonDocument doc(1024);
+    deserializeJson(doc, payload);
+    sendNextionCommand("db.txt=\"on\"");
+
+    // Získanie údajov a ich odoslanie na Nextion displej
+    String teplota = doc["teplota"].as<String>();  y
+    String tepShort = teplota.substring(0, 4);
+    String vlhkost = doc["vlhkost"].as<String>();   
+    String tlak = doc["tlak"].as<String>();       
+    String tlakShort = tlak.substring(0, 3);
+    String plyn = doc["plyn"].as<String>();
+    String cas = doc["cas"].as<String>();
+    String datum = doc["datum"].as<String>();
+     
+
+    sendNextionCommand("temperature.txt=\"" + tepShort + "\"");
+    sendNextionCommand("humidity.txt=\"" + vlhkost + "\"");
+    sendNextionCommand("pressure.txt=\"" + tlakShort + "\"");
+    sendNextionCommand("t1.txt=\"" + plyn + "\"");
+    sendNextionCommand("cas.txt=\"" + cas + "\"");
+    sendNextionCommand("datum.txt=\"" + datum + "\"");
+
+    // Vypíšeme získané údaje do Serial monitoru
+    //Serial.println("Data from PHP script:");
+    //Serial.print("Temperature: ");
+    //Serial.println(teplota);
+    //Serial.print("Humidity: ");
+    //Serial.println(vlhkost);
+    //Serial.print("Pressure: ");
+    //Serial.println(tlak);
+    //Serial.print("Gas: ");
+    //Serial.println(plyn);
+
+  } else {
+    Serial.println("Chyba pri získavaní dát z PHP skriptu");
+  }
+  http.end();
+}
+
+
+
+int mapWeatherIcon(int id) {
+  if (id >= 200 && id < 300) return 3;  // Búrka
+  if (id >= 300 && id < 600) return 4;  // Dážď
+  if (id >= 600 && id < 700) return 5;  // Sneh
+  if (id >= 700 && id < 800) return 6;  // Hmla
+  if (id == 800) return 7;              // Jasno
+  if (id > 800) return 8;               // Oblaky
+  return 2;  // Defaultná ikona pre neznámy stav
+}
+
+void sendNextionCommand(String cmd) {
+  Serial2.print(cmd);
+  Serial2.write(0xFF);
+  Serial2.write(0xFF);
+  Serial2.write(0xFF);
+}
