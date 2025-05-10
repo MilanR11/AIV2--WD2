@@ -1,0 +1,58 @@
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+<div class="container">
+        <div class="d-flex justify-content-end text-white">
+            <p id="time" class="mb-0"></p>
+        </div>
+    </div>
+    <div class="container">
+        <a class="navbar-brand" href="../index.php">
+        
+            <img src="../obrazky/logo.png" alt="Logo" height="40"> Monitoring prostredia
+        </a>
+        <div class="d-flex justify-content-end text-white">
+            <p id="time" class="mb-0"></p>
+        </div>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav ms-auto">
+                <li class="nav-item"><a class="nav-link" href="../index.php">Domov</a></li>
+                <li class="nav-item"><a class="nav-link" href="../grafy/grafy.php">Grafy</a></li>
+                <li class="nav-item"><a class="nav-link" href="../data/data.php">Údaje</a></li>
+                <li class="nav-item"><a class="nav-link" href="../about/about.php">O projekte</a></li>
+                <li class="nav-item"><a class="nav-link" href="../logout.php">Odhlásiť sa</a></li>
+            </ul>
+        </div>
+    </div>
+    
+</nav>
+
+<script>
+    function updateTime() {
+        var now = new Date();
+        var day = String(now.getDate()).padStart(2, '0');
+        var month = String(now.getMonth() + 1).padStart(2, '0'); // months are zero-indexed
+        var year = now.getFullYear();
+        var hours = String(now.getHours()).padStart(2, '0');
+        var minutes = String(now.getMinutes()).padStart(2, '0');
+        var seconds = String(now.getSeconds()).padStart(2, '0');
+
+        var formattedTime = day + '/' + month + '/' + year + ' ' + hours + ':' + minutes + ':' + seconds;
+        document.getElementById('time').textContent = formattedTime;
+    }
+
+    setInterval(updateTime, 1000); // Aktualizovať každú sekundu
+    updateTime(); // Zavolať hneď, aby sa čas zobrazil okamžite
+</script>
+
+<style>
+    #time {
+        position: relative;
+        top: 0px;
+        right: 0px;
+        font-size: 18px;
+    }
+</style>
+
+
